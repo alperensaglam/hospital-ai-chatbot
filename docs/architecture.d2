@@ -1,0 +1,138 @@
+# High-Level System Architecture — Hospital AI Assistant
+
+direction: down
+
+user: "👤 User" {
+  shape: person
+}
+
+ui: "Chat UI / API Layer\n(Streamlit)" {
+  shape: rectangle
+  style.fill: "#e3f2fd"
+}
+
+input_guard: "Input Guardrail" {
+  shape: hexagon
+  style.fill: "#ffcdd2"
+  label: "Input Guardrail\n• Prompt injection detection\n• Privacy check\n• Out-of-scope filter"
+}
+
+orchestrator: "Agent Orchestrator\n(LangGraph StateGraph)" {
+  shape: rectangle
+  style.fill: "#fff3e0"
+  style.stroke: "#ff9800"
+  style.stroke-width: 2
+
+  memory_read: "Read Memory" {
+    shape: diamond
+    style.fill: "#e8eaf6"
+  }
+  intent: "Intent Classifier" {
+    shape: diamond
+    style.fill: "#e8eaf6"
+  }
+  rewriter: "Query Rewriter" {
+    shape: diamond
+    style.fill: "#e8eaf6"
+  }
+  sufficiency: "Sufficiency Check" {
+    shape: diamond
+    style.fill: "#e8eaf6"
+  }
+  synthesizer: "Answer Synthesizer" {
+    shape: diamond
+    style.fill: "#e8eaf6"
+  }
+  self_check: "Self-Check" {
+    shape: diamond
+    style.fill: "#e8eaf6"
+  }
+
+  memory_read -> intent -> rewriter
+  rewriter -> sufficiency: "after retrieval"
+  sufficiency -> synthesizer
+  synthesizer -> self_check
+}
+
+rag: "Agentic RAG Pipeline" {
+  shape: rectangle
+  style.fill: "#e8f5e9"
+
+  chroma: "ChromaDB\nVector Store" {
+    shape: cylinder
+    style.fill: "#c8e6c9"
+  }
+  embeddings: "Embedding\n(LiteLLM)" {
+    shape: rectangle
+  }
+
+  embeddings -> chroma: "semantic search"
+}
+
+tools: "Structured Tools" {
+  shape: rectangle
+  style.fill: "#f3e5f5"
+
+  hospital_db: "Hospital DB\n(SQLite)" {
+    shape: cylinder
+    style.fill: "#e1bee7"
+  }
+  appt_api: "Appointment\nMock API" {
+    shape: rectangle
+  }
+}
+
+output_guard: "Output Guardrail" {
+  shape: hexagon
+  style.fill: "#ffcdd2"
+  label: "Output Guardrail\n• Grounding check\n• PHI removal\n• Disclaimer injection"
+}
+
+memory: "Memory System" {
+  shape: rectangle
+  style.fill: "#e8eaf6"
+
+  short_term: "Short-term\n(In-memory)" {
+    shape: rectangle
+  }
+  long_term: "Long-term Prefs\n(SQLite)" {
+    shape: cylinder
+    style.fill: "#c5cae9"
+  }
+  policy: "Memory Policy" {
+    shape: hexagon
+    style.fill: "#ffcdd2"
+  }
+}
+
+audit: "Audit Logger\n(JSONL)" {
+  shape: document
+  style.fill: "#fce4ec"
+}
+
+llm: "LLM API\n(via LiteLLM)" {
+  shape: cloud
+  style.fill: "#fffde7"
+}
+
+# Connections
+user -> ui: "message"
+ui -> input_guard
+input_guard -> orchestrator: "safe requests"
+input_guard -> ui: "blocked → refusal" {style.stroke-dash: 3}
+
+orchestrator -> rag: "retrieve"
+orchestrator -> tools: "tool query"
+orchestrator -> output_guard: "draft answer"
+orchestrator -> memory: "read / write"
+orchestrator -> llm: "LLM calls"
+
+rag -> orchestrator: "chunks"
+tools -> orchestrator: "structured data"
+output_guard -> ui: "final answer"
+memory -> orchestrator: "context"
+
+input_guard -> audit: "log"
+output_guard -> audit: "log"
+tools -> audit: "log"
+memory.policy -> audit: "log"
