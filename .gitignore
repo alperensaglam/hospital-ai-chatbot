@@ -216,3 +216,17 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Database and binary files
+*.db
+*.bin
+db/
+bin/
+
+# Vector DB
+chroma/
+chroma_db/
+
+# Logs
+audit_logs/
+audit_logs.txt
