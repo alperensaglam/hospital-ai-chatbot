@@ -120,10 +120,17 @@ def node_input_guard(state: AgentState) -> dict:
     trace_entry = {"node": "input_guard", "result": result}
 
     if result.get("blocked"):
+        # Use `or` (not .get default) so an explicit None from LLM JSON
+        # still falls back to the refusal string.
+        safe_response = result.get("safe_response") or (
+            "I'm sorry, but I cannot fulfill this request. "
+            "It appears to conflict with our security and privacy policies. "
+            "If you have a hospital-related question, I'm happy to help."
+        )
         return {
             "input_guard_result": result,
             "is_blocked": True,
-            "final_answer": result.get("safe_response", "I cannot process this request."),
+            "final_answer": safe_response,
             "trace": state.get("trace", []) + [trace_entry],
         }
 
@@ -374,13 +381,16 @@ def node_update_memory(state: AgentState) -> dict:
     """Save conversation turn and check for preference updates."""
     mm = _get_memory_manager()
     user_id = state.get("user_id", "demo_user")
+    final_answer = state.get("final_answer") or ""
 
     # Save the conversation turn
     mm.add_message("user", state["user_message"], user_id)
-    mm.add_message("assistant", state.get("final_answer", ""), user_id)
+    mm.add_message("assistant", final_answer, user_id)
 
-    # Try to extract and store preferences
-    pref = mm.extract_and_store_preferences(state["user_message"], user_id)
+    # Try to extract and store preferences (skip for blocked requests)
+    pref = None
+    if not state.get("is_blocked"):
+        pref = mm.extract_and_store_preferences(state["user_message"], user_id)
 
     trace_entry = {
         "node": "update_memory",
@@ -388,7 +398,9 @@ def node_update_memory(state: AgentState) -> dict:
         "preference_details": pref,
     }
 
+    # Re-emit final_answer to guarantee it persists in state
     return {
+        "final_answer": final_answer,
         "trace": state.get("trace", []) + [trace_entry],
     }
 

@@ -26,9 +26,15 @@ RULES:
 7. Do NOT provide medical diagnoses or treatment recommendations.
 
 {preference_instructions}
+
+{memory_preferences}
 """
 
-CONCISE_INSTRUCTION = "The user prefers SHORT, concise answers. Keep your response brief — ideally 2-4 sentences."
+CONCISE_INSTRUCTION = (
+    "⚠️ CRITICAL STYLE REQUIREMENT: The user has explicitly requested SHORT, "
+    "concise answers. You MUST keep your response brief — ideally 2-4 sentences. "
+    "Do NOT write long paragraphs. Summarize key points only."
+)
 DETAILED_INSTRUCTION = "The user prefers detailed, thorough answers."
 
 
@@ -54,13 +60,25 @@ def synthesize_answer(
         The synthesized answer string.
     """
     preference = CONCISE_INSTRUCTION if prefer_concise else ""
-    system = SYSTEM_PROMPT.format(preference_instructions=preference)
+
+    # Build memory preference block for the system prompt so the LLM
+    # treats stored user preferences as authoritative instructions.
+    memory_pref_block = ""
+    if memory_context:
+        memory_pref_block = (
+            "USER MEMORY & PREFERENCES (you MUST respect these):\n"
+            f"{memory_context}\n"
+            "You MUST strictly follow any user preferences listed above. "
+            "For example, if the user prefers concise answers, keep your "
+            "response to 2-4 sentences maximum."
+        )
+
+    system = SYSTEM_PROMPT.format(
+        preference_instructions=preference,
+        memory_preferences=memory_pref_block,
+    )
 
     user_content = f"Question: {user_question}\n\n"
-
-    if memory_context:
-        user_content += f"Conversation history / memory:\n{memory_context}\n\n"
-
     user_content += f"Retrieved context:\n{context}"
 
     if tool_results:
