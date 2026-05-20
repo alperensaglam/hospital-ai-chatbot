@@ -236,10 +236,16 @@ def judge_refusal_quality(question: str, answer: str) -> dict:
 
 def run_query(query: str, mode: str) -> dict[str, Any]:
     """Run a single query through the pipeline and collect metrics."""
+    from agents.metrics import metrics as metrics_tracker
+
+    # Reset metrics for this query
+    metrics_tracker.reset()
+
     # Fresh memory manager per query to avoid cross-contamination
     mm = MemoryManager(db_path="data/memory.db")
     mm.reset_session("eval_user")
 
+    metrics_tracker.start_e2e()
     start = time.time()
     try:
         result = run_agent(query, user_id="eval_user", memory_manager=mm, mode=mode)
@@ -249,6 +255,9 @@ def run_query(query: str, mode: str) -> dict[str, Any]:
         elapsed = time.time() - start
         result = {"final_answer": f"[ERROR] {e}", "trace": [], "is_blocked": False}
         error = str(e)
+
+    metrics_tracker.end_e2e()
+    run_metrics = metrics_tracker.summary()
 
     answer = result.get("final_answer", "") or ""
     chunks = result.get("retrieved_chunks", [])
@@ -271,6 +280,7 @@ def run_query(query: str, mode: str) -> dict[str, Any]:
         "nodes_visited": [t.get("node", "?") for t in trace],
         "context": result.get("formatted_context", ""),
         "error": error,
+        "runtime_metrics": run_metrics,
     }
 
 
@@ -344,15 +354,21 @@ def evaluate_rag_queries() -> list[dict[str, Any]]:
         }
         results.append(entry)
 
-        # Print summary
+        # Print summary with runtime metrics
+        am = agentic.get("runtime_metrics", {})
+        bm = baseline.get("runtime_metrics", {})
         print(f"  AGENTIC  — Retrieval: {'✓' if agentic_retrieval_hit else '✗'} | "
               f"Faith: {agentic_faith.get('score', '?')}/5 | "
               f"Quality: {agentic_quality.get('score', '?')}/5 | "
-              f"{agentic['elapsed_s']}s")
+              f"{agentic['elapsed_s']}s | "
+              f"LLM calls: {am.get('total-llm-calls', '?')} | "
+              f"Tokens: {am.get('total-tokens', '?')}")
         print(f"  BASELINE — Retrieval: {'✓' if baseline_retrieval_hit else '✗'} | "
               f"Faith: {baseline_faith.get('score', '?')}/5 | "
               f"Quality: {baseline_quality.get('score', '?')}/5 | "
-              f"{baseline['elapsed_s']}s")
+              f"{baseline['elapsed_s']}s | "
+              f"LLM calls: {bm.get('total-llm-calls', '?')} | "
+              f"Tokens: {bm.get('total-tokens', '?')}")
 
     return results
 
@@ -413,8 +429,12 @@ def evaluate_guardrail_queries() -> list[dict[str, Any]]:
 
         s_status = "BLOCKED ✓" if secure["is_blocked"] else "PASSED ✗"
         u_status = "BLOCKED" if unprotected["is_blocked"] else "PASSED (unprotected)"
-        print(f"  SECURE      — {s_status} | PII leaked: {len(secure_pii)} items")
-        print(f"  UNPROTECTED — {u_status} | PII leaked: {len(unprotected_pii)} items")
+        sm = secure.get("runtime_metrics", {})
+        um = unprotected.get("runtime_metrics", {})
+        print(f"  SECURE      — {s_status} | PII leaked: {len(secure_pii)} | "
+              f"LLM calls: {sm.get('total-llm-calls', '?')} | Tokens: {sm.get('total-tokens', '?')}")
+        print(f"  UNPROTECTED — {u_status} | PII leaked: {len(unprotected_pii)} | "
+              f"LLM calls: {um.get('total-llm-calls', '?')} | Tokens: {um.get('total-tokens', '?')}")
 
     return results
 
@@ -532,6 +552,93 @@ def generate_markdown_report(
             lines.append(f"⚠️ PII found: {u['pii_found']}\n")
         lines.append("---\n")
 
+    # ── Summary Table (Instructor Format §5.12) ──────────────────────
+    lines.append("## Summary Table: RAG Pipeline Comparison (Instructor Format)\n")
+    lines.append("| # | Experiment | Avg Tokens | Avg Latency (s) | Avg LLM Calls | Avg Accuracy |")
+    lines.append("|---|------------|------------|------------------|----------------|--------------|")
+
+    def _safe_avg(values: list) -> float:
+        nums = [v for v in values if isinstance(v, (int, float))]
+        return sum(nums) / len(nums) if nums else 0.0
+
+    # Baseline RAG row
+    bl_tokens = [r["baseline"]["runtime_metrics"]["total-tokens"] for r in rag_results]
+    bl_latency = [r["baseline"]["runtime_metrics"]["e2e-response-time"] for r in rag_results]
+    bl_calls = [r["baseline"]["runtime_metrics"]["total-llm-calls"] for r in rag_results]
+    bl_accuracy = [(r["baseline"]["quality"].get("score", 0) or 0) / 5.0 for r in rag_results]
+    lines.append(
+        f"| 1 | Baseline RAG (non-agentic) | {_safe_avg(bl_tokens):.0f} | "
+        f"{_safe_avg(bl_latency):.1f} | {_safe_avg(bl_calls):.0f} | "
+        f"{_safe_avg(bl_accuracy):.2f} |"
+    )
+
+    # Agentic RAG row
+    ag_tokens = [r["agentic"]["runtime_metrics"]["total-tokens"] for r in rag_results]
+    ag_latency = [r["agentic"]["runtime_metrics"]["e2e-response-time"] for r in rag_results]
+    ag_calls = [r["agentic"]["runtime_metrics"]["total-llm-calls"] for r in rag_results]
+    ag_accuracy = [(r["agentic"]["quality"].get("score", 0) or 0) / 5.0 for r in rag_results]
+    lines.append(
+        f"| 2 | Agentic RAG (full pipeline) | {_safe_avg(ag_tokens):.0f} | "
+        f"{_safe_avg(ag_latency):.1f} | {_safe_avg(ag_calls):.0f} | "
+        f"{_safe_avg(ag_accuracy):.2f} |"
+    )
+
+    lines.append(f"\n*Strategy: Agentic RAG with intent classification, query rewriting, "
+                 f"sufficiency checking, self-verification, and memory.*")
+    lines.append("")
+
+    # Guardrail summary table
+    lines.append("## Summary Table: Guardrail Comparison\n")
+    lines.append("| # | Experiment | Avg Tokens | Avg Latency (s) | Avg LLM Calls | Avg Safety Score |")
+    lines.append("|---|------------|------------|------------------|----------------|------------------|")
+
+    # With guardrails row
+    sg_tokens = [r["secure"]["runtime_metrics"]["total-tokens"] for r in guard_results]
+    sg_latency = [r["secure"]["runtime_metrics"]["e2e-response-time"] for r in guard_results]
+    sg_calls = [r["secure"]["runtime_metrics"]["total-llm-calls"] for r in guard_results]
+    sg_accuracy = [1.0 if r["secure"]["correctly_handled"] else 0.0 for r in guard_results]
+    lines.append(
+        f"| 1 | With Guardrails (Agentic) | {_safe_avg(sg_tokens):.0f} | "
+        f"{_safe_avg(sg_latency):.1f} | {_safe_avg(sg_calls):.0f} | "
+        f"{_safe_avg(sg_accuracy):.2f} |"
+    )
+
+    # Without guardrails row
+    ug_tokens = [r["unprotected"]["runtime_metrics"]["total-tokens"] for r in guard_results]
+    ug_latency = [r["unprotected"]["runtime_metrics"]["e2e-response-time"] for r in guard_results]
+    ug_calls = [r["unprotected"]["runtime_metrics"]["total-llm-calls"] for r in guard_results]
+    ug_accuracy = [1.0 if r["unprotected"]["correctly_handled"] else 0.0 for r in guard_results]
+    lines.append(
+        f"| 2 | Without Guardrails | {_safe_avg(ug_tokens):.0f} | "
+        f"{_safe_avg(ug_latency):.1f} | {_safe_avg(ug_calls):.0f} | "
+        f"{_safe_avg(ug_accuracy):.2f} |"
+    )
+
+    lines.append(f"\n*Safety Score: Proportion of adversarial queries correctly handled "
+                 f"(blocked when dangerous, allowed when safe).*\n")
+
+    # ── Per-Query Runtime Metrics Detail ─────────────────────────────
+    lines.append("## Per-Query Runtime Metrics\n")
+    lines.append("| Query ID | Mode | LLM Calls | E2E Time (s) | Total Tokens | Mean Tok/Call |")
+    lines.append("|----------|------|-----------|--------------|--------------|---------------|")
+    for r in rag_results:
+        for mode_key, mode_label in [("agentic", "Agentic"), ("baseline", "Baseline")]:
+            m = r[mode_key]["runtime_metrics"]
+            lines.append(
+                f"| {r['id']} | {mode_label} | {m['total-llm-calls']} | "
+                f"{m['e2e-response-time']} | {m['total-tokens']} | "
+                f"{m['mean-token-per-call']} |"
+            )
+    for r in guard_results:
+        for mode_key, mode_label in [("secure", "Secure"), ("unprotected", "Unprotected")]:
+            m = r[mode_key]["runtime_metrics"]
+            lines.append(
+                f"| {r['id']} | {mode_label} | {m['total-llm-calls']} | "
+                f"{m['e2e-response-time']} | {m['total-tokens']} | "
+                f"{m['mean-token-per-call']} |"
+            )
+    lines.append("")
+
     report = "\n".join(lines)
     output_path.write_text(report, encoding="utf-8")
     return report
@@ -610,6 +717,29 @@ def main():
     s_pii = sum(len(r["secure"]["pii_found"]) for r in guard_results)
     u_pii = sum(len(r["unprotected"]["pii_found"]) for r in guard_results)
     print(f"  PII Leakage Items:   Secure {s_pii}  vs  Unprotected {u_pii}")
+
+    # ── Runtime metrics summary (instructor format §5.12) ──
+    def _avg(vals: list) -> float:
+        nums = [v for v in vals if isinstance(v, (int, float))]
+        return sum(nums) / len(nums) if nums else 0.0
+
+    print("\n" + "-" * 70)
+    print("  RUNTIME METRICS — RAG Pipeline Comparison")
+    print("-" * 70)
+    print(f"  {'Experiment':<30} {'Avg Tokens':>10} {'Avg Latency':>12} {'Avg LLM Calls':>14} {'Avg Accuracy':>13}")
+    print(f"  {'-'*30} {'-'*10} {'-'*12} {'-'*14} {'-'*13}")
+
+    bl_tok = _avg([r["baseline"]["runtime_metrics"]["total-tokens"] for r in rag_results])
+    bl_lat = _avg([r["baseline"]["runtime_metrics"]["e2e-response-time"] for r in rag_results])
+    bl_cal = _avg([r["baseline"]["runtime_metrics"]["total-llm-calls"] for r in rag_results])
+    bl_acc = _avg([(r["baseline"]["quality"].get("score", 0) or 0) / 5.0 for r in rag_results])
+    print(f"  {'Baseline RAG':<30} {bl_tok:>10.0f} {bl_lat:>11.1f}s {bl_cal:>14.0f} {bl_acc:>13.2f}")
+
+    ag_tok = _avg([r["agentic"]["runtime_metrics"]["total-tokens"] for r in rag_results])
+    ag_lat = _avg([r["agentic"]["runtime_metrics"]["e2e-response-time"] for r in rag_results])
+    ag_cal = _avg([r["agentic"]["runtime_metrics"]["total-llm-calls"] for r in rag_results])
+    ag_acc = _avg([(r["agentic"]["quality"].get("score", 0) or 0) / 5.0 for r in rag_results])
+    print(f"  {'Agentic RAG (full pipeline)':<30} {ag_tok:>10.0f} {ag_lat:>11.1f}s {ag_cal:>14.0f} {ag_acc:>13.2f}")
     print("=" * 70)
 
 

@@ -8,6 +8,7 @@ so we have a single place to configure model, temperature, and retry logic.
 from __future__ import annotations
 
 import os
+import time
 
 import litellm
 from dotenv import load_dotenv
@@ -35,6 +36,8 @@ def llm_call(
         max_tokens: Maximum response tokens.
         response_format: Optional response format (e.g. {"type": "json_object"}).
     """
+    from agents.metrics import metrics
+
     model = model or LLM_MODEL
 
     kwargs: dict = {
@@ -46,7 +49,21 @@ def llm_call(
     if response_format:
         kwargs["response_format"] = response_format
 
+    start = time.perf_counter()
     response = litellm.completion(**kwargs)
+    duration = time.perf_counter() - start
+
+    # Record runtime metrics
+    usage = response.usage
+    if usage:
+        metrics.record_call(
+            duration_s=duration,
+            prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+            completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+            total_tokens=getattr(usage, "total_tokens", 0) or 0,
+            model=model,
+        )
+
     return response.choices[0].message.content.strip()
 
 
