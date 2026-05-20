@@ -24,7 +24,7 @@ PHI_PATTERNS = [
 ]
 
 # Hospital-owned numbers that must never be redacted
-HOSPITAL_WHITELIST = re.compile(r"\(555\)\s*100[-.\s]?\d{4}")
+HOSPITAL_WHITELIST = re.compile(r"\(?555\)?\s*100[-.\s]?\d{4}")
 
 # Phrases that indicate the system might be giving medical advice
 MEDICAL_ADVICE_PATTERNS = [
