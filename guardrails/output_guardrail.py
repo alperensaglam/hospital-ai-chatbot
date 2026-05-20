@@ -23,6 +23,9 @@ PHI_PATTERNS = [
     re.compile(r"\bmedical\s+record\s+(?:number|#|id)\s*[:\s]?\s*\w+", re.IGNORECASE),  # MRN
 ]
 
+# Hospital-owned numbers that must never be redacted
+HOSPITAL_WHITELIST = re.compile(r"\(555\)\s*100[-.\s]?\d{4}")
+
 # Phrases that indicate the system might be giving medical advice
 MEDICAL_ADVICE_PATTERNS = [
     "you should take",
@@ -62,13 +65,18 @@ def check_output(
     modified = answer
     blocked = False
 
-    # 1. Check for PHI leakage
+    # 1. Check for PHI leakage (skip hospital's own whitelisted numbers)
     for pattern in PHI_PATTERNS:
         matches = pattern.findall(modified)
         if matches:
+            redacted_any = False
             for match in matches:
+                if HOSPITAL_WHITELIST.search(match):
+                    continue  # This is the hospital's own number — keep it
                 modified = modified.replace(match, "[REDACTED]")
-            modifications.append(f"Redacted PHI matching pattern: {pattern.pattern}")
+                redacted_any = True
+            if redacted_any:
+                modifications.append(f"Redacted PHI matching pattern: {pattern.pattern}")
 
     # 2. Check for medical advice
     answer_lower = modified.lower()

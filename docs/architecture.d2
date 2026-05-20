@@ -1,6 +1,6 @@
 # High-Level System Architecture — Hospital AI Assistant
 
-direction: right
+direction: down
 
 vars: {
   d2-config: {
@@ -200,7 +200,7 @@ style: {
 # Nodes
 # ─────────────────────────────────────────────
 
-user: "👤 User" {
+user: "User" {
   class: in
 }
 
@@ -212,102 +212,121 @@ ui: "Chat UI / API Layer\n(Streamlit)" {
 input_guard: "Input Guardrail" {
   class: cont
 
-  injection_detect: "Prompt Injection\nDetection" {
-    class: agent
+  pattern_match: "Pattern Matching\n(16 Injection Patterns)" {
+    class: code
   }
-  privacy_check: "Privacy Check" {
-    class: agent
-  }
-  scope_filter: "Out-of-Scope\nFilter" {
+  llm_classify: "LLM Safety\nClassifier" {
     class: agent
   }
 
-  injection_detect -> privacy_check -> scope_filter
+  pattern_match -> llm_classify: "if no pattern hit"
 }
 
-# ── Agent Orchestrator ───────────────────────
+# ── Agent Orchestrator (LangGraph StateGraph) ──
 orchestrator: "Agent Orchestrator\n(LangGraph StateGraph)" {
   class: cont1
 
-  memory_read: "Read Memory" {
+  read_memory: "Read Memory" {
     class: agent
   }
-  intent: "Intent Classifier" {
+  classify_intent: "Intent Classifier\n(7 categories)" {
     class: agent
   }
-  rewriter: "Query Rewriter" {
+  rewrite_query: "Query Rewriter\n(1-3 queries)" {
     class: agent
   }
-  sufficiency: "Sufficiency Check" {
+  retrieve: "Retrieve\n(multi-query)" {
     class: agent
   }
-  synthesizer: "Answer Synthesizer" {
+  check_sufficiency: "Sufficiency\nCheck" {
     class: agent
   }
-  self_check: "Self-Check" {
+  route_tools: "Tool Router" {
+    class: agent
+  }
+  synthesize: "Answer\nSynthesizer" {
+    class: agent
+  }
+  self_check: "Self-Check\n(Grounding)" {
+    class: agent
+  }
+  update_memory: "Update Memory\n(Preferences)" {
     class: agent
   }
 
-  memory_read -> intent -> rewriter
-  rewriter -> sufficiency: "after retrieval"
-  sufficiency -> synthesizer
-  synthesizer -> self_check
+  read_memory -> classify_intent -> rewrite_query
+  rewrite_query -> retrieve -> check_sufficiency
+  check_sufficiency -> route_tools: "if tools needed"
+  check_sufficiency -> synthesize: "if sufficient"
+  check_sufficiency -> rewrite_query: "retry (max 2)"
+  route_tools -> synthesize
+  synthesize -> self_check
 }
 
 # ── Agentic RAG Pipeline ────────────────────
-rag: "Agentic RAG Pipeline" {
+rag: "RAG Pipeline" {
   class: cont
 
-  embeddings: "Embedding\n(LiteLLM)" {
+  embeddings: "Embedding\n(text-embedding-3-small)" {
     class: code
   }
   chroma: "ChromaDB\nVector Store" {
     class: tool
   }
+  retrieval_guard: "Retrieval Guardrail\n(Access Level Filter)" {
+    class: agent
+  }
 
   embeddings -> chroma: "semantic search"
+  chroma -> retrieval_guard: "filter chunks"
 }
 
 # ── Structured Tools ────────────────────────
 tools: "Structured Tools" {
   class: cont_tools
 
+  tool_guard: "Tool Guardrail\n(Action Whitelist)" {
+    class: agent
+  }
   hospital_db: "Hospital DB\n(SQLite)" {
     class: tool
   }
   appt_api: "Appointment\nMock API" {
     class: tool
   }
+
+  tool_guard -> hospital_db: "safe actions"
+  tool_guard -> appt_api: "confirmed actions"
 }
 
 # ── Output Guardrail ────────────────────────
 output_guard: "Output Guardrail" {
   class: cont
 
-  grounding: "Grounding Check" {
+  phi_removal: "PHI Redaction\n(Regex Patterns)" {
     class: agent
   }
-  phi_removal: "PHI Removal" {
+  disclaimer: "Medical Disclaimer\nInjection" {
     class: agent
   }
-  disclaimer: "Disclaimer\nInjection" {
-    class: agent
+  truncation: "Length\nTruncation" {
+    class: code
   }
 
-  grounding -> phi_removal -> disclaimer
+  phi_removal -> disclaimer -> truncation
 }
 
 # ── Memory System ───────────────────────────
 memory: "Memory System" {
   class: cont
 
-  short_term: "Short-term\n(In-memory)" {
+  short_term: "Short-term\n(In-memory Dict)" {
     class: code
   }
   long_term: "Long-term Prefs\n(SQLite)" {
     class: tool
   }
-  policy: "Memory Policy" {
+  policy: "Memory Policy\n(PII Blocking)" {
     class: agent
   }
 }
@@ -329,20 +348,20 @@ final_answer: "Final\nAnswer" {
 user -> ui: "message"
 ui -> input_guard
 input_guard -> orchestrator: "safe requests"
-input_guard -> ui: "blocked → refusal"
+input_guard -> ui: "blocked: refusal"
 
-orchestrator -> rag: "retrieve"
-orchestrator -> tools: "tool query"
+orchestrator -> rag: "retrieve (rewritten queries)"
+orchestrator -> tools: "tool query (intent-based)"
 orchestrator -> output_guard: "draft answer"
 orchestrator -> memory: "read / write"
 
-
-rag -> orchestrator: "chunks"
+rag -> orchestrator: "filtered chunks"
 tools -> orchestrator: "structured data"
-output_guard -> final_answer: "validated"
-memory -> orchestrator: "context"
+output_guard -> final_answer: "validated answer"
+memory -> orchestrator: "conversation + preferences"
 
 input_guard -> audit: "log"
 output_guard -> audit: "log"
-tools -> audit: "log"
+tools.tool_guard -> audit: "log"
 memory.policy -> audit: "log"
+orchestrator.self_check -> output_guard: "verified answer"
