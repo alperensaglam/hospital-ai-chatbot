@@ -49,14 +49,20 @@ def chat(
     Process a user message through the full agent pipeline.
 
     Returns:
-        dict with keys: answer, trace, intent, is_blocked
+        dict with keys: answer, trace, intent, is_blocked, metrics
     """
+    from agents.metrics import metrics
+
     if graph is None:
         graph, memory_manager = create_app()
 
     from agents.orchestrator import set_memory_manager
     if memory_manager:
         set_memory_manager(memory_manager)
+
+    # Reset and start metrics tracking
+    metrics.reset()
+    metrics.start_e2e()
 
     initial_state = {
         "user_message": user_message,
@@ -66,6 +72,10 @@ def chat(
 
     result = graph.invoke(initial_state)
 
+    # End metrics tracking and print to console
+    metrics.end_e2e()
+    metrics.print_summary()
+
     return {
         "answer": result.get("final_answer", "I'm sorry, something went wrong."),
         "trace": result.get("trace", []),
@@ -73,6 +83,7 @@ def chat(
         "is_blocked": result.get("is_blocked", False),
         "self_check": result.get("self_check_result", {}),
         "retrieved_chunks": result.get("retrieved_chunks", []),
+        "metrics": metrics.summary(),
     }
 
 

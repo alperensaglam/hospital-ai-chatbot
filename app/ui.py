@@ -226,6 +226,7 @@ if prompt := st.chat_input("Type your question here..."):
             "rewritten_queries": [],
             "chunks": [],
             "trace": result.get("trace", []),
+            "metrics": result.get("metrics"),
         }
 
         # Extract rewritten queries from trace
@@ -264,6 +265,17 @@ if prompt := st.chat_input("Type your question here..."):
                     for i, chunk in enumerate(debug_info["chunks"][:5]):
                         score_val = chunk.get('score', 0)
                         st.markdown(f"  {i+1}. {chunk.get('title', 'Unknown')} (score: {score_val:.3f})")
+
+                # Runtime metrics display
+                if debug_info.get("metrics"):
+                    m = debug_info["metrics"]
+                    st.markdown("**Runtime Metrics:**")
+                    cols = st.columns(5)
+                    cols[0].metric("LLM Calls", m.get("total-llm-calls", 0))
+                    cols[1].metric("E2E Time", f"{m.get('e2e-response-time', 0)}s")
+                    cols[2].metric("Mean Time", f"{m.get('mean-response-time', 0)}s")
+                    cols[3].metric("Total Tokens", m.get("total-tokens", 0))
+                    cols[4].metric("Tok/Call", m.get("mean-token-per-call", 0))
 
                 with st.expander("Full trace"):
                     st.json(debug_info["trace"])
