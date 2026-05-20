@@ -509,13 +509,29 @@ def run_agent(
     user_message: str,
     user_id: str = "demo_user",
     memory_manager: MemoryManager | None = None,
+    mode: str = "agentic",
 ) -> dict:
     """
-    Run the full agent pipeline for a user message.
+    Run the agent pipeline for a user message.
+
+    Args:
+        user_message: The user's input text.
+        user_id: User identifier for memory and audit logging.
+        memory_manager: Optional shared memory manager instance.
+        mode: Pipeline mode — one of:
+            "agentic"       (default) Full pipeline with all components.
+            "baseline"      Naive RAG: raw query → retrieve → synthesize.
+            "no_guardrails" Full agentic pipeline but guardrails disabled.
 
     Returns the final AgentState dict.
     """
-    graph = build_graph(memory_manager)
+    if mode == "baseline":
+        graph = build_baseline_graph(memory_manager)
+    elif mode == "no_guardrails":
+        graph = build_no_guardrails_graph(memory_manager)
+    else:
+        graph = build_graph(memory_manager)
+
     initial_state: AgentState = {
         "user_message": user_message,
         "user_id": user_id,
@@ -523,3 +539,138 @@ def run_agent(
     }
     result = graph.invoke(initial_state)
     return result
+
+
+# ── Evaluation mode: Baseline RAG ──────────────────────────────────────────
+#
+# A minimal pipeline that bypasses all agentic components:
+#   raw query → retrieve (single query, no rewrite) → synthesize → END
+#
+# This proves the value of intent classification, query rewriting,
+# sufficiency checking, self-checking, and guardrails.
+
+
+def node_baseline_retrieve(state: AgentState) -> dict:
+    """Retrieve using the raw user query — no rewriting, no multi-query."""
+    raw_query = state["user_message"]
+
+    chunks = retrieve(raw_query, top_k=4)
+    chunks.sort(key=lambda c: c.score)
+    chunks = chunks[:6]
+
+    context = format_context(chunks)
+
+    trace_entry = {
+        "node": "baseline_retrieve",
+        "queries_used": [raw_query],
+        "chunks_found": len(chunks),
+        "top_scores": [c.score for c in chunks[:3]],
+    }
+
+    return {
+        "retrieved_chunks": chunks,
+        "formatted_context": context,
+        "retrieval_attempt": 1,
+        "trace": state.get("trace", []) + [trace_entry],
+    }
+
+
+def build_baseline_graph(memory_manager: MemoryManager | None = None) -> StateGraph:
+    """
+    Build a minimal baseline RAG pipeline (no agentic components).
+
+    Pipeline: baseline_retrieve → synthesize → END
+
+    No input/output guardrails, no intent classification, no query rewriting,
+    no sufficiency checks, no self-check, no memory, no tool routing.
+    """
+    if memory_manager:
+        set_memory_manager(memory_manager)
+
+    graph = StateGraph(AgentState)
+
+    graph.add_node("baseline_retrieve", node_baseline_retrieve)
+    graph.add_node("synthesize", node_synthesize)
+
+    graph.set_entry_point("baseline_retrieve")
+    graph.add_edge("baseline_retrieve", "synthesize")
+    graph.add_edge("synthesize", END)
+
+    return graph.compile()
+
+
+# ── Evaluation mode: No-Guardrails ─────────────────────────────────────────
+#
+# The full agentic pipeline, but with guardrail nodes replaced by passthroughs.
+# This demonstrates what happens when safety layers are removed.
+
+
+def node_passthrough_input_guard(state: AgentState) -> dict:
+    """Passthrough input guard — always allows the request (no safety check)."""
+    trace_entry = {
+        "node": "input_guard",
+        "result": {"category": "bypassed", "blocked": False},
+        "guardrails_disabled": True,
+    }
+    return {
+        "input_guard_result": {"category": "bypassed", "blocked": False},
+        "is_blocked": False,
+        "trace": state.get("trace", []) + [trace_entry],
+    }
+
+
+def node_passthrough_output_guard(state: AgentState) -> dict:
+    """Passthrough output guard — returns draft answer with no sanitization."""
+    trace_entry = {
+        "node": "output_guard",
+        "modifications": [],
+        "guardrails_disabled": True,
+    }
+    return {
+        "final_answer": state.get("draft_answer", ""),
+        "trace": state.get("trace", []) + [trace_entry],
+    }
+
+
+def build_no_guardrails_graph(memory_manager: MemoryManager | None = None) -> StateGraph:
+    """
+    Build the full agentic pipeline with guardrails disabled.
+
+    Same as build_graph() but input_guard and output_guard are replaced
+    with passthrough nodes that perform no safety checks.
+    """
+    if memory_manager:
+        set_memory_manager(memory_manager)
+
+    graph = StateGraph(AgentState)
+
+    # Guardrail nodes replaced with passthroughs
+    graph.add_node("input_guard", node_passthrough_input_guard)
+    graph.add_node("output_guard", node_passthrough_output_guard)
+
+    # All other agentic nodes remain unchanged
+    graph.add_node("read_memory", node_read_memory)
+    graph.add_node("classify_intent", node_classify_intent)
+    graph.add_node("rewrite_query", node_rewrite_query)
+    graph.add_node("retrieve", node_retrieve)
+    graph.add_node("check_sufficiency", node_check_sufficiency)
+    graph.add_node("route_tools", node_route_tools)
+    graph.add_node("synthesize", node_synthesize)
+    graph.add_node("self_check", node_self_check)
+    graph.add_node("update_memory", node_update_memory)
+
+    # Same edges as the full graph
+    graph.set_entry_point("input_guard")
+    graph.add_conditional_edges("input_guard", route_after_input_guard)
+    graph.add_edge("read_memory", "classify_intent")
+    graph.add_conditional_edges("classify_intent", route_after_intent)
+    graph.add_edge("rewrite_query", "retrieve")
+    graph.add_edge("retrieve", "check_sufficiency")
+    graph.add_conditional_edges("check_sufficiency", route_after_sufficiency)
+    graph.add_edge("route_tools", "synthesize")
+    graph.add_edge("synthesize", "self_check")
+    graph.add_edge("self_check", "output_guard")
+    graph.add_edge("output_guard", "update_memory")
+    graph.add_edge("update_memory", END)
+
+    return graph.compile()
