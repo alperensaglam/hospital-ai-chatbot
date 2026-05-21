@@ -140,6 +140,13 @@ class MemoryManager:
         """
         uid = user_id or self.default_user_id
 
+        # Deduplication check
+        existing_prefs = self.get_user_preferences(uid)
+        for p in existing_prefs:
+            if p["type"] == memory_type and p["content"].lower().strip() == content.lower().strip():
+                logger.info(f"Memory skipped: already exists ({memory_type}: {content})")
+                return False, "Already stored"
+
         # Policy check
         allowed, reason = can_store_long_term(memory_type, content)
         if not allowed:
