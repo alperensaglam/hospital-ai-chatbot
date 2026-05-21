@@ -320,6 +320,7 @@ def node_synthesize(state: AgentState) -> dict:
     answer = synthesize_answer(
         user_question=state["user_message"],
         context=state.get("formatted_context", ""),
+        intent=state.get("intent", ""),
         memory_context=state.get("memory_context", ""),
         tool_results=state.get("tool_results", ""),
         prefer_concise=state.get("prefer_concise", False),
@@ -335,6 +336,17 @@ def node_synthesize(state: AgentState) -> dict:
 
 def node_self_check(state: AgentState) -> dict:
     """Verify the answer is supported by context."""
+    intent = state.get("intent", "")
+    
+    # Skip self-check for non-RAG intents
+    if intent in ("general_greeting", "out_of_scope"):
+        trace_entry = {"node": "self_check", "skipped": True, "reason": f"Intent is {intent}"}
+        return {
+            "self_check_result": {"verdict": "supported", "confidence": 1.0, "reasoning": "Skipped for non-RAG intent"},
+            "draft_answer": state.get("draft_answer", ""),
+            "trace": state.get("trace", []) + [trace_entry],
+        }
+
     result = check_answer(
         draft_answer=state.get("draft_answer", ""),
         context=state.get("formatted_context", ""),

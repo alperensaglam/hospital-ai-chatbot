@@ -140,18 +140,32 @@ class MemoryManager:
         """
         uid = user_id or self.default_user_id
 
-        # Deduplication check
-        existing_prefs = self.get_user_preferences(uid)
-        for p in existing_prefs:
-            if p["type"] == memory_type and p["content"].lower().strip() == content.lower().strip():
-                logger.info(f"Memory skipped: already exists ({memory_type}: {content})")
-                return False, "Already stored"
-
         # Policy check
         allowed, reason = can_store_long_term(memory_type, content)
         if not allowed:
             logger.info(f"Memory write blocked: {reason}")
             return False, reason
+
+        # Deduplication & Overwrite logic
+        existing_prefs = self.get_user_preferences(uid)
+        
+        # Singleton types: only keep the latest one (delete old ones of same type)
+        singleton_types = {"language_preference", "answer_length_preference", "communication_style"}
+        
+        if memory_type in singleton_types:
+            for p in existing_prefs:
+                if p["type"] == memory_type:
+                    # Same logic applies: if it's the exact same string, skip rewriting
+                    if p["content"].lower().strip() == content.lower().strip():
+                        return False, "Already stored"
+                    self.long_term.delete_by_id(p["memory_id"])
+                    logger.info(f"Deleted previous {memory_type} to overwrite with new value.")
+        else:
+            # For list-like types (e.g. preferred_department, general_preference)
+            for p in existing_prefs:
+                if p["type"] == memory_type and p["content"].lower().strip() == content.lower().strip():
+                    logger.info(f"Memory skipped: already exists ({memory_type}: {content})")
+                    return False, "Already stored"
 
         sensitivity = classify_sensitivity(content)
         entry = make_memory_entry(uid, memory_type, content, sensitivity)

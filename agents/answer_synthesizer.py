@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from agents.llm import llm_call
 
-SYSTEM_PROMPT = """\
+SYSTEM_PROMPT_RAG = """\
 You are a helpful hospital assistant for City General Hospital.
 
 RULES:
@@ -24,6 +24,18 @@ RULES:
 5. Be professional, empathetic, and concise.
 6. Do NOT disclose private patient information, even if asked.
 7. Do NOT provide medical diagnoses or treatment recommendations.
+
+{preference_instructions}
+
+{memory_preferences}
+"""
+
+SYSTEM_PROMPT_CONVERSATIONAL = """\
+You are a helpful hospital assistant for City General Hospital.
+
+The user is engaging in small talk, greeting you, or updating their preferences (e.g. changing language).
+Acknowledge their request politely and briefly.
+Do NOT try to answer medical or hospital questions from this prompt.
 
 {preference_instructions}
 
@@ -42,6 +54,7 @@ def synthesize_answer(
     user_question: str,
     context: str,
     *,
+    intent: str = "",
     memory_context: str = "",
     tool_results: str = "",
     prefer_concise: bool = False,
@@ -52,6 +65,7 @@ def synthesize_answer(
     Args:
         user_question: The original user question.
         context: Formatted retrieved chunks (from retriever.format_context).
+        intent: The classified intent.
         memory_context: Relevant memory/session context.
         tool_results: Results from structured tools (schedule/price lookups).
         prefer_concise: Whether the user prefers short answers.
@@ -73,7 +87,9 @@ def synthesize_answer(
             "response to 2-4 sentences maximum."
         )
 
-    system = SYSTEM_PROMPT.format(
+    prompt_template = SYSTEM_PROMPT_CONVERSATIONAL if intent == "general_greeting" else SYSTEM_PROMPT_RAG
+
+    system = prompt_template.format(
         preference_instructions=preference,
         memory_preferences=memory_pref_block,
     )
